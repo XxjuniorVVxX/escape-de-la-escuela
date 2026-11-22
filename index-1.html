@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Escape de la Escuela</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#10131d;color:#f5f5f5;font-family:monospace;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:12px}#wrap{width:min(960px,100%)}h1{font-size:clamp(22px,4vw,34px);margin:0 0 6px}p{color:#c6cbd8;margin:5px 0 12px}canvas{display:block;width:100%;height:auto;aspect-ratio:900/470;background:#171421;border:4px solid #d7c7a1;border-radius:0;image-rendering:pixelated;touch-action:none;box-shadow:0 0 0 4px #342b3e}#panel{background:#1b2232;border:1px solid #46516b;border-radius:0;padding:14px;margin-bottom:10px}select,button{font:inherit;color:#fff;background:#303044;border:2px solid #d7c7a1;border-radius:0;padding:9px}button{cursor:pointer;background:#8b4c35}button:active{transform:scale(.98)}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:8px 0}.muted{font-size:13px;color:#aeb8cb}.hidden{display:none}#touch{display:flex;justify-content:space-between;gap:18px;margin-top:10px;user-select:none}#touch .pad{display:grid;grid-template-columns:repeat(3,48px);gap:5px}#touch button{padding:8px;font-size:20px;touch-action:none}#touch .spacer{visibility:hidden}#status{min-height:24px;color:#ffcf9d;font-weight:600;margin-top:8px}
+#roomCode{width:110px;text-transform:uppercase}#netStatus{color:#9ee7c2;font-weight:bold} .online{background:#286b68} </style></head>
+<body><main id="wrap"><h1>Escape de la Escuela</h1><p>Aventura cooperativa pixel art. Reúnanse en la sala de espera y luego escapen de la escuela en llamas.</p>
+<section id="panel">
+<div class="row"><label>Tu personaje: <select id="p1"><option>Frisk</option><option>Kris</option></select></label><label>Personaje de tu amigo: <select id="p2"><option>Ceroba</option><option>Martlet</option></select></label></div>
+<div class="row"><label>Código de sala: <input id="roomCode" maxlength="8" value="KJMD" autocomplete="off"></label><button class="online" id="createRoom">Crear sala online</button><button id="joinRoom">Unirse a sala</button></div>
+<div class="row"><button id="start">Empezar partida</button><span id="netStatus" class="muted">Sin conexión online. Crea una sala o únete con un código.</span></div>
+<div class="muted">Para jugar online, ambos necesitan internet y abrir este mismo juego. El anfitrión crea la sala y comienza cuando el amigo se conecte. Controles: J1 A/D/W; J2 flechas. En celular usa los controles táctiles.</div></section>
+<canvas id="game" width="450" height="235" aria-label="Juego de plataformas"></canvas>
+<div id="status">Están en la sala de espera. Elige los personajes y pulsa «Empezar partida».</div>
+<div id="touch"><div class="pad"><span class="spacer"></span><button data-key="w">▲</button><span class="spacer"></span><button data-key="a">◀</button><button data-key="s">●</button><button data-key="d">▶</button></div><div class="pad"><span class="spacer"></span><button data-key="ArrowUp">▲</button><span class="spacer"></span><button data-key="ArrowLeft">◀</button><button data-key="ArrowDown">●</button><button data-key="ArrowRight">▶</button></div></div>
+<p class="muted">Prototipo original con personajes seleccionables por nombre; usa diseños, escenario y sonidos propios, sin imágenes ni música oficiales.</p></main>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+const c=document.getElementById('game'),ctx=c.getContext('2d'),status=document.getElementById('status');ctx.scale(0.5,0.5);ctx.imageSmoothingEnabled=false;
+let keys={},running=false,won=false,hasStarted=false,frame=0,shake=0,players=[],camera=0;
+let peer=null,conn=null,online=false,isHost=false,netInputs={left:false,right:false,jump:false},lastNetSend=0,friendReady=false;
+const world=2600, floor=410;
+const platforms=[{x:0,y:410,w:650,h:60},{x:720,y:410,w:430,h:60},{x:1220,y:410,w:500,h:60},{x:1800,y:410,w:800,h:60},{x:390,y:330,w:130,h:18},{x:820,y:340,w:130,h:18},{x:1050,y:285,w:140,h:18},{x:1450,y:335,w:140,h:18},{x:1900,y:320,w:150,h:18},{x:2180,y:270,w:130,h:18}];
+const fires=[{x:260,y:382,w:55},{x:570,y:382,w:45},{x:900,y:382,w:70},{x:1330,y:382,w:55},{x:1600,y:382,w:70},{x:1980,y:382,w:60},{x:2310,y:382,w:60}];
+function makePlayer(name,x,color,controls){return {name,x,y:365,vx:0,vy:0,w:25,h:38,color,controls,onGround:false,checkpoint:40,done:false}}
+function start(){hasStarted=true;players=[makePlayer(p1.value,45,'#73d6dc',{left:'a',right:'d',jump:'w'}),makePlayer(p2.value,80,'#e7a6d4',{left:'ArrowLeft',right:'ArrowRight',jump:'ArrowUp'})];running=true;won=false;frame=0;camera=0;status.textContent='¡Corre hacia la derecha! Evita las zonas de fuego y los huecos.';document.getElementById('panel').classList.add('hidden');if(online&&isHost&&conn&&conn.open)conn.send({type:'start',p1:p1.value,p2:p2.value});}
+document.getElementById('start').onclick=()=>{if(online&&!isHost)return; if(online&&!friendReady){netStatus.textContent='Espera a que tu amigo se una.';return;} start();};
+const netStatus=document.getElementById('netStatus'),roomCode=document.getElementById('roomCode'),startButton=document.getElementById('start');
+function setNet(message){netStatus.textContent=message;}
+function setupHostConnection(cn){conn=cn;conn.on('open',()=>{friendReady=true;setNet('¡Amigo conectado! Ya pueden comenzar.');startButton.disabled=false;conn.send({type:'welcome',hostCharacter:p1.value,guestCharacter:p2.value});});conn.on('data',data=>{if(!data||typeof data!=='object')return;if(data.type==='input'){netInputs=data.input||netInputs;}if(data.type==='character'){p2.value=data.name;if(players[1])players[1].name=data.name;} });conn.on('close',()=>{friendReady=false;setNet('Tu amigo se desconectó.');});}
+document.getElementById('createRoom').onclick=()=>{if(typeof Peer==='undefined'){setNet('No se pudo cargar el servicio online. Revisa tu conexión e inténtalo otra vez.');return;}const code=roomCode.value.trim().toLowerCase();if(!/^[a-z0-9]{4,8}$/.test(code)){setNet('Usa un código de 4 a 8 letras o números.');return;}if(peer)peer.destroy();online=true;isHost=true;friendReady=false;startButton.disabled=true;setNet('Creando sala '+code.toUpperCase()+'...');peer=new Peer(code);peer.on('open',id=>{roomCode.value=id.toUpperCase();setNet('Sala '+id.toUpperCase()+' creada. ¡Comparte el código!');});peer.on('connection',cn=>{if(conn&&conn.open){cn.close();return;}setupHostConnection(cn);});peer.on('error',err=>{setNet(err.type==='unavailable-id'?'Ese código ya está ocupado. Prueba otro.':'Error de conexión: '+err.type);});};
+document.getElementById('joinRoom').onclick=()=>{if(typeof Peer==='undefined'){setNet('No se pudo cargar el servicio online. Revisa tu conexión.');return;}const code=roomCode.value.trim().toLowerCase();if(!/^[a-z0-9]{4,8}$/.test(code)){setNet('Escribe un código de 4 a 8 letras o números.');return;}if(peer)peer.destroy();online=true;isHost=false;startButton.disabled=true;setNet('Conectando a la sala '+code.toUpperCase()+'...');peer=new Peer();peer.on('open',()=>{conn=peer.connect(code,{reliable:true});conn.on('open',()=>{friendReady=true;setNet('¡Conectado! Esperando a que el anfitrión comience.');});conn.on('data',data=>{if(!data||typeof data!=='object')return;if(data.type==='welcome'){p1.value=data.hostCharacter||'Frisk';p2.value=data.guestCharacter||'Ceroba';}if(data.type==='start'){hasStarted=true;players=[makePlayer(data.p1,45,'#73d6dc',{left:'a',right:'d',jump:'w'}),makePlayer(data.p2,80,'#e7a6d4',{left:'ArrowLeft',right:'ArrowRight',jump:'ArrowUp'})];running=true;won=false;frame=0;camera=0;document.getElementById('panel').classList.add('hidden');status.textContent='¡Estás conectado! Escapen juntos.';}if(data.type==='state'){if(!isHost){players=data.players||players;camera=data.camera||0;running=data.running;won=data.won;if(data.status)status.textContent=data.status;if(won){document.getElementById('panel').classList.remove('hidden');}}}});conn.on('close',()=>{friendReady=false;setNet('Se perdió la conexión con la sala.');});});peer.on('error',err=>setNet('No se pudo conectar: '+err.type+'. Comprueba el código.'));};
+p2.addEventListener('change',()=>{if(online&&conn&&conn.open)conn.send({type:'character',name:p2.value});});
+window.addEventListener('keydown',e=>{keys[e.key.length===1?e.key.toLowerCase():e.key]=true;if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key))e.preventDefault();if((e.key==='Enter')&&won){start()}});
+window.addEventListener('keyup',e=>keys[e.key.length===1?e.key.toLowerCase():e.key]=false);
+document.querySelectorAll('#touch button').forEach(b=>{let k=b.dataset.key;b.addEventListener('pointerdown',e=>{e.preventDefault();keys[k]=true});['pointerup','pointercancel','pointerleave'].forEach(ev=>b.addEventListener(ev,()=>keys[k]=false))});
+function rect(x,y,w,h,col){ctx.fillStyle=col;ctx.fillRect(x,y,w,h)}
+function drawWorld(){ctx.clearRect(0,0,900,470);let sx=shake?Math.sin(frame*2.7)*shake:0,sy=shake?Math.cos(frame*2.1)*shake:0;ctx.save();ctx.translate(-camera+sx,sy);
+// fondo escolar
+rect(camera-20,0,950,470,'#211d35');rect(camera-20,0,950,250,'#282642');rect(camera-20,250,950,220,'#493044');
+for(let x=Math.floor(camera/180)*180;x<camera+1000;x+=180){rect(x,65,130,165,'#393653');rect(x+10,78,48,64,'#8d9aa8');rect(x+72,78,48,64,'#8d9aa8');rect(x+14,82,40,56,'#d1a76d');rect(x+76,82,40,56,'#d1a76d');rect(x+61,78,8,64,'#211d35');rect(x+10,148,110,8,'#211d35');rect(x,60,130,7,'#75627b');}
+// señales y plataformas
+platforms.forEach(p=>{rect(p.x,p.y,p.w,p.h,'#51445b');rect(p.x,p.y,p.w,7,'#d1b58a');for(let tx=p.x+12;tx<p.x+p.w-5;tx+=32){rect(tx,p.y+13,3,3,'#786078');}});
+// fuego estilizado
+fires.forEach(f=>{for(let i=0;i<4;i++){let h=18+Math.floor(Math.abs(Math.sin(frame*.15+i*2+f.x))*22/6)*6;rect(f.x+i*13,floor-h,12,h,'#e34b36');rect(f.x+3+i*13,floor-h-7,6,8,'#ffb13b');rect(f.x+4+i*13,floor-10,5,10,'#ffe28a')}});
+// salida
+rect(2500,300,65,110,'#3a9d78');rect(2512,315,41,95,'#b7e7c9');ctx.fillStyle='#e8f5db';ctx.font='bold 16px monospace';ctx.fillText('SALIDA',2494,286);
+players.forEach((p,i)=>{let coat=p.name==='Frisk'?'#6b4c9a':p.name==='Kris'?'#245c83':p.name==='Ceroba'?'#c94c42':'#4779a8';let hair=p.name==='Frisk'?'#6b4a32':p.name==='Kris'?'#263044':p.name==='Ceroba'?'#e4b64f':'#d7e6ef';let x=Math.round(p.x/4)*4,y=Math.round(p.y/4)*4;rect(x+4,y,16,8,hair);rect(x,y+8,24,12,p.color);rect(x+4,y+8,16,8,'#f1c7a2');rect(x+5,y+12,3,3,'#252238');rect(x+16,y+12,3,3,'#252238');rect(x+4,y+20,16,12,coat);rect(x,y+20,4,8,coat);rect(x+20,y+20,4,8,coat);rect(x+4,y+32,7,6,'#29243b');rect(x+15,y+32,7,6,'#29243b');ctx.fillStyle='#fff';ctx.font='bold 12px monospace';ctx.fillText(p.name,x-8,y-8)});
+ctx.restore();
+// overlay temblor y aviso
+if(frame%230<24){ctx.fillStyle='rgba(255,210,150,.12)';ctx.fillRect(0,0,900,470)}
+ctx.fillStyle='#fff';ctx.font='bold 14px monospace';ctx.fillText('DISTANCIA: '+Math.min(100,Math.floor((Math.max(...players.map(p=>p.x))/2500)*100))+'%',15,24);
+}
+function drawLobby(){
+  ctx.clearRect(0,0,900,470);
+  const tremor=(frame%190<18)?Math.sin(frame*1.7)*1.5:0;
+  ctx.save();ctx.translate(tremor,0);
+  // Sala de espera sci-fi original, en pixel art
+  rect(0,0,900,470,'#101a2b');rect(0,0,900,300,'#1c3048');rect(0,300,900,170,'#26394b');
+  // paneles del techo y luces
+  for(let x=24;x<900;x+=150){rect(x,28,112,9,'#38516a');rect(x+12,42,88,4,'#6e91a7');rect(x+36,58,40,5,'#a7d9df');}
+  // paredes metálicas
+  for(let x=0;x<900;x+=180){rect(x,100,9,200,'#405a70');rect(x+12,112,150,6,'#38536b');rect(x+12,276,150,7,'#17283b');rect(x+24,135,48,72,'#28465d');rect(x+82,135,60,72,'#28465d');rect(x+29,141,38,60,'#416d83');rect(x+88,141,48,60,'#416d83');}
+  // puerta central y señal
+  rect(370,102,160,198,'#101f31');rect(384,116,132,184,'#547087');rect(394,126,112,174,'#1c3046');rect(410,145,80,140,'#263f56');rect(440,206,20,7,'#b5d6d7');
+  rect(390,82,120,18,'#e2b45e');ctx.fillStyle='#1b2635';ctx.font='bold 13px monospace';ctx.fillText('SALA DE ESPERA',397,95);
+  // mesas, consola y cajas
+  rect(75,316,180,18,'#718b9a');rect(90,334,14,54,'#425b70');rect(226,334,14,54,'#425b70');rect(112,288,108,28,'#29495f');rect(124,295,84,12,'#69c5c2');
+  rect(650,326,170,18,'#718b9a');rect(668,344,14,48,'#425b70');rect(788,344,14,48,'#425b70');rect(687,292,98,34,'#29495f');rect(700,300,72,16,'#d28c56');
+  rect(300,362,68,48,'#916b4d');rect(308,370,52,8,'#c69a68');rect(308,388,52,8,'#c69a68');rect(550,366,62,44,'#916b4d');rect(558,374,46,7,'#c69a68');
+  // rejilla de ventilación
+  rect(400,400,100,24,'#101d2b');for(let x=408;x<495;x+=12)rect(x,405,5,14,'#60788a');
+  // jugadores pixel art en la sala
+  const names=[document.getElementById('p1').value,document.getElementById('p2').value];
+  const spots=[{x:290,y:255,c:'#62c8ce'},{x:570,y:255,c:'#d58bb8'}];
+  names.forEach((name,i)=>{let a=spots[i],x=a.x,y=a.y+Math.sin(frame*.06+i)*2;let coat=name==='Frisk'?'#6b4c9a':name==='Kris'?'#245c83':name==='Ceroba'?'#c94c42':'#4779a8';
+    // sombra y cuerpo de tripulante estilo pixelado original
+    rect(x+3,y+55,38,7,'#142332');rect(x+5,y+17,34,34,coat);rect(x+9,y+4,28,24,coat);rect(x+12,y+8,27,14,'#9bdde0');rect(x+14,y+10,20,9,'#d9f4e9');rect(x+4,y+26,8,20,coat);rect(x+34,y+26,8,20,coat);rect(x+9,y+48,10,10,'#263347');rect(x+27,y+48,10,10,'#263347');
+    ctx.fillStyle='#fff';ctx.font='bold 14px monospace';ctx.fillText(name,x-2,y-10);
+  });
+  // consola de inicio y mensaje
+  rect(350,435,200,22,'#15283b');rect(358,439,184,5,'#4f788c');ctx.fillStyle='#e6f1ed';ctx.font='bold 13px monospace';ctx.fillText('ESPERANDO A LA TRIPULACIÓN',305,26);
+  ctx.restore();
+  ctx.fillStyle='#f7e8c8';ctx.font='bold 15px monospace';ctx.fillText('SALA MULTIJUGADOR',18,455);
+  ctx.fillStyle='#b8cbd5';ctx.font='12px monospace';ctx.fillText('Elige los personajes arriba y pulsa EMPEZAR PARTIDA',18,445);
+}
+function draw(){if(!hasStarted){drawLobby();return;}drawWorld();}
+function updatePlayer(p,index){let left=(online&&isHost&&index===1)?netInputs.left:keys[p.controls.left],right=(online&&isHost&&index===1)?netInputs.right:keys[p.controls.right],jump=(online&&isHost&&index===1)?netInputs.jump:(keys[p.controls.jump]||(!players[1]&&keys[' ']));p.vx=(right?3.2:0)-(left?3.2:0);p.x+=p.vx;p.x=Math.max(0,Math.min(world-p.w,p.x));p.vy+=.48;p.y+=p.vy;p.onGround=false;
+for(const pl of platforms){if(p.x+p.w>pl.x&&p.x<pl.x+pl.w&&p.y+p.h>=pl.y&&p.y+p.h<=pl.y+pl.h+12&&p.vy>=0){p.y=pl.y-p.h;p.vy=0;p.onGround=true}}
+if(jump&&p.onGround){p.vy=-10.7;p.onGround=false}
+if(p.y>500){p.x=Math.max(0,p.x-100);p.y=330;p.vy=0;status.textContent=p.name+' perdió el equilibrio y volvió al último pasillo.'}
+for(const f of fires){if(p.x+p.w>f.x&&p.x<f.x+f.w&&p.y+p.h>floor-30&&p.y<floor){p.x=Math.max(0,p.x-90);p.y=330;p.vy=0;status.textContent='¡Cuidado con el fuego! Busca otra ruta.'}}
+}
+function loop(){requestAnimationFrame(loop);if(online&&!isHost&&conn&&conn.open&&running){if(frame-lastNetSend>1){conn.send({type:'input',input:{left:!!(keys.a||keys.ArrowLeft),right:!!(keys.d||keys.ArrowRight),jump:!!(keys.w||keys.ArrowUp||keys[' '])}});lastNetSend=frame;}}if(!running){draw();return}frame++;shake=(frame%180<35)?2.4:((frame%180>110&&frame%180<130)?1.2:0);if(!online||isHost){players.forEach((p,i)=>updatePlayer(p,i));camera=Math.max(0,Math.min(world-900,Math.max(...players.map(p=>p.x))-350));if(players.every(p=>p.x>2470)){running=false;won=true;status.textContent='¡Lo lograron! Los dos escaparon de la escuela.';document.getElementById('panel').classList.remove('hidden')}if(online&&isHost&&conn&&conn.open&&frame%3===0){conn.send({type:'state',players:players.map(p=>({name:p.name,x:p.x,y:p.y,vx:p.vx,vy:p.vy,w:p.w,h:p.h,color:p.color,controls:p.controls,onGround:p.onGround})),camera,running,won,status:status.textContent});}}draw()}
+loop();
+</script></body></html>
